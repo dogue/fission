@@ -1,5 +1,8 @@
 package fission
 
+import "core:log"
+import "core:unicode"
+
 Atom_Kind :: enum {
     Unknown,
     EOF,
@@ -71,6 +74,7 @@ Scanner_State :: enum {
     Punctuation,
     Whitespace,
     Newline,
+    Integer_Prefix,
 }
 
 Scanner_Options :: bit_set[Scanner_Option]
@@ -100,15 +104,21 @@ scanner_init :: proc(s: ^Scanner, input: []rune, opts: Scanner_Options = DEFAULT
 }
 
 scanner_next_atom :: proc(s: ^Scanner) -> (atom: Atom) {
+    atom.offset = s.offset
+    atom.line, atom.col = s.line, s.col
+
     for s.state != .Finished {
         s.state = scan(s, &atom)
     }
+
     s.state = .Scanning
     return atom
 }
 
 @(private)
 scan :: proc(s: ^Scanner, a: ^Atom) -> (next: Scanner_State) {
+    log.debugf("Current state: %s", s.state)
+    log.debugf("Current rune: %c", current_rune(s))
     if s.offset >= len(s.input) {
         a.kind = .EOF
         a.len = 0
@@ -121,9 +131,17 @@ scan :: proc(s: ^Scanner, a: ^Atom) -> (next: Scanner_State) {
     case .Scanning:
         switch current_rune(s) {
         case 'a'..='z', 'A'..='Z': next = .Word_Chunk
-        case '0'..='9': next = .Number_Chunk
         case ' ', '\t': next = .Whitespace
         case '\r', '\n': next = .Newline
+
+        case '0':
+            // assume integer prefix
+            // resolve inside prefix state
+            a.len += 1
+            advance(s)
+            next = .Integer_Prefix
+
+        case '1'..='9': next = .Number_Chunk
 
         // quotes advance to consume the quote character
         case '\'':
@@ -149,13 +167,40 @@ scan :: proc(s: ^Scanner, a: ^Atom) -> (next: Scanner_State) {
         case: next = .Punctuation
         }
 
-    case .Finished:
     case .Word_Chunk:
+        a.kind = .Word
+        for unicode.is_alpha(current_rune(s)) {
+            a.len += 1
+            advance(s)
+        }
+        next = .Finished
+
+    case .Integer_Prefix:
+        switch current_rune(s) {
+        case 'b', 'B': a.kind = .Binary_Prefix; next = .Finished
+        case 'x', 'X': a.kind = .Hex_Prefix;    next = .Finished
+        case 'o', 'O': a.kind = .Octal_Prefix;  next = .Finished
+        case:
+            // not a prefix
+            a.kind = .Number
+            next = .Number_Chunk
+        }
+        a.len += 1
+        advance(s)
+
     case .Number_Chunk:
+        a.kind = .Number
+        for unicode.is_digit(current_rune(s)) {
+            a.len += 1
+            advance(s)
+        }
+        next = .Finished
+
     case .String_Chunk:
     case .Punctuation:
     case .Whitespace:
     case .Newline:
+    case .Finished: unreachable()
     }
 
     return next
