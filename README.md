@@ -10,6 +10,9 @@ then be passed into a language-specific token filter for merging or other modifi
 While punctuation characters are emitted a singular entities, there are some atoms that can collect many characters:
 
 \* contiguous runs of alphabetic characters are emitted together as a `Word` atom
+
 \* as above, but with `Number` for digits
+
 \* single quotes, double quotes, and backticks are emitted like other punctuation, but the contents between opening and closing quotes are emitted together as a `String` atom
+
 \* `0b`, `0x`, and `0o` are emitted as `Binary_Prefix`, `Hex_Prefix`, and `Octal_Prefix`, respectively.
