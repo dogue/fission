@@ -70,9 +70,13 @@ Scanner_State :: enum {
     Finished,
     Word_Chunk,
     Number_Chunk,
+    String_Start,
     String_Chunk,
+    String_End,
     Punctuation,
     Whitespace,
+    Space_Chunk,
+    Tab_Chunk,
     Newline,
     Integer_Prefix,
 }
@@ -92,15 +96,27 @@ Scanner :: struct {
     state: Scanner_State,
     offset: int,
     opts: Scanner_Options,
+    is_word_start_proc: proc(r: rune) -> bool,
+    is_word_continue_proc: proc(r: rune) -> bool,
+    str_delimiter: rune,
+    at_end_of_str: bool,
 }
 
-scanner_init :: proc(s: ^Scanner, input: []rune, opts: Scanner_Options = DEFAULT_SCANNER_OPTIONS) {
+scanner_init :: proc(
+    s: ^Scanner,
+    input: []rune,
+    opts: Scanner_Options = DEFAULT_SCANNER_OPTIONS,
+    is_word_start_proc := is_word_start,
+    is_word_continue_proc := is_word_continue,
+) {
     s.input = input
     s.line = 1
     s.col = 1
     s.state = .Scanning
     s.offset = 0
     s.opts = opts
+    s.is_word_start_proc = is_word_start_proc
+    s.is_word_continue_proc = is_word_continue_proc
 }
 
 scanner_next_atom :: proc(s: ^Scanner) -> (atom: Atom) {
@@ -117,66 +133,45 @@ scanner_next_atom :: proc(s: ^Scanner) -> (atom: Atom) {
 
 @(private)
 scan :: proc(s: ^Scanner, a: ^Atom) -> (next: Scanner_State) {
-    log.debugf("Current state: %s", s.state)
-    log.debugf("Current rune: %c", current_rune(s))
+    a.offset, a.line, a.col = s.offset, s.line, s.col
     if s.offset >= len(s.input) {
         a.kind = .EOF
         a.len = 0
-        a.offset, a.line, a.col = s.offset, s.line, s.col
         next = .Finished
         return next
     }
 
     switch s.state {
     case .Scanning:
-        switch current_rune(s) {
-        case 'a'..='z', 'A'..='Z': next = .Word_Chunk
-        case ' ', '\t': next = .Whitespace
-        case '\r', '\n': next = .Newline
+        ch := peek(s)
+        switch true {
+        case s.at_end_of_str: next = .String_End
+        case is_quote(s.str_delimiter): next = .String_Chunk
+        case s.is_word_start_proc(ch): next = .Word_Chunk
+        case ch == ' ' || ch == '\t': next = .Whitespace
+        case ch == '\r':
+        case ch == '\n': next = .Newline
 
-        case '0':
-            // assume integer prefix
-            // resolve inside prefix state
+        case ch == '0':
             a.len += 1
             advance(s)
             next = .Integer_Prefix
 
-        case '1'..='9': next = .Number_Chunk
-
-        // quotes advance to consume the quote character
-        case '\'':
-            a.kind = .Single_Quote
-            a.len += 1
-            advance(s)
-            next = .String_Chunk
-
-        case '"':
-            a.kind = .Double_Quote
-            a.len += 1
-            advance(s)
-            next = .String_Chunk
-
-        case '`':
-            a.kind = .Backtick
-            a.len += 1
-            advance(s)
-            next = .String_Chunk
-
-        // assume anything else is punctuation
-        // if not, deal with it in the Punctuation state
+        case unicode.is_digit(ch): next = .Number_Chunk
+        case is_quote(ch): next = .String_Start
         case: next = .Punctuation
         }
 
     case .Word_Chunk:
         a.kind = .Word
-        for unicode.is_alpha(current_rune(s)) {
+        for s.is_word_continue_proc(peek(s)) {
             a.len += 1
             advance(s)
         }
         next = .Finished
 
     case .Integer_Prefix:
-        switch current_rune(s) {
+        switch peek(s) {
         case 'b', 'B': a.kind = .Binary_Prefix; next = .Finished
         case 'x', 'X': a.kind = .Hex_Prefix;    next = .Finished
         case 'o', 'O': a.kind = .Octal_Prefix;  next = .Finished
@@ -190,15 +185,72 @@ scan :: proc(s: ^Scanner, a: ^Atom) -> (next: Scanner_State) {
 
     case .Number_Chunk:
         a.kind = .Number
-        for unicode.is_digit(current_rune(s)) {
+        for unicode.is_digit(peek(s)) {
             a.len += 1
             advance(s)
         }
         next = .Finished
 
+    case .String_Start:
+        s.str_delimiter = peek(s)
+        switch s.str_delimiter {
+        case '\'': a.kind = .Single_Quote
+        case '"': a.kind = .Double_Quote
+        case '`': a.kind = .Backtick
+        }
+        a.len += 1
+        advance(s)
+        next = .Finished
+
     case .String_Chunk:
+        a.kind = .String
+        for peek(s) != s.str_delimiter {
+            advance(s)
+            a.len += 1
+        }
+        s.at_end_of_str = true
+        next = .Finished
+
+    case .String_End:
+        switch s.str_delimiter {
+        case '\'': a.kind = .Single_Quote
+        case '"': a.kind = .Double_Quote
+        case '`': a.kind = .Backtick
+        }
+        s.str_delimiter = 0
+        s.at_end_of_str = false
+        a.len += 1
+        advance(s)
+        next = .Finished
+
     case .Punctuation:
     case .Whitespace:
+        if .Emit_Whitespace in s.opts {
+            if peek(s) == ' ' do next = .Space_Chunk
+            if peek(s) == '\t' do next = .Tab_Chunk
+        } else {
+            for peek(s) == ' ' || peek(s) == '\t' {
+                advance(s)
+            }
+            next = .Scanning
+        }
+
+    case .Space_Chunk:
+        a.kind = .Space
+        for peek(s) == ' ' {
+            advance(s)
+            a.len += 1
+        }
+        next = .Finished
+
+    case .Tab_Chunk:
+        a.kind = .Tab
+        for peek(s) == '\t' {
+            advance(s)
+            a.len += 1
+        }
+        next = .Finished
+
     case .Newline:
     case .Finished: unreachable()
     }
@@ -207,7 +259,7 @@ scan :: proc(s: ^Scanner, a: ^Atom) -> (next: Scanner_State) {
 }
 
 @(private)
-current_rune :: proc(s: ^Scanner) -> rune {
+peek :: #force_inline proc(s: ^Scanner) -> rune {
     if s.offset >= len(s.input) {
         return 0
     } else {
@@ -225,4 +277,24 @@ advance :: proc(s: ^Scanner) {
     }
 
     s.col += 1
+}
+
+@(private)
+is_quote :: #force_inline proc(r: rune) -> bool {
+    return r == '\'' ||
+           r == '"'  ||
+           r == '`'
+}
+
+// default .Word validation procs
+@(private)
+is_word_start :: proc(r: rune) -> bool {
+    return unicode.is_alpha(r)
+}
+
+@(private)
+is_word_continue :: proc(r: rune) -> bool {
+    return unicode.is_alpha(r) ||
+           unicode.is_digit(r) ||
+           r == '_'
 }
