@@ -168,6 +168,7 @@ scan :: proc(s: ^Scanner, a: ^Atom) -> (next: Scanner_State) {
     case .Word_Chunk:
         a.kind = .Word
         for s.is_word_continue_proc(peek(s)) {
+            log.debugf("word ch: %d (%c)", peek(s), peek(s))
             a.len += 1
             advance(s)
         }
@@ -256,7 +257,28 @@ scan :: proc(s: ^Scanner, a: ^Atom) -> (next: Scanner_State) {
         next = .Finished
 
     case .Newline:
+        a.kind = .Newline
+        a.len += 1
+        advance(s)
+        next = .Finished
+
     case .Carriage_Return:
+        if .Normalize_Newlines in s.opts {
+            a.kind = .Newline
+            a.len += 1
+            advance(s)
+            if peek(s) == '\n' {
+                next = .Newline
+            } else {
+                next = .Finished
+            }
+        } else {
+            a.kind = .Carriage_Return
+            a.len += 1
+            advance(s)
+            next = .Finished
+        }
+
     case .Finished: unreachable()
     }
 
