@@ -78,6 +78,7 @@ Scanner_State :: enum {
     Space_Chunk,
     Tab_Chunk,
     Newline,
+    Carriage_Return,
     Integer_Prefix,
 }
 
@@ -98,6 +99,7 @@ Scanner :: struct {
     opts: Scanner_Options,
     is_word_start_proc: proc(r: rune) -> bool,
     is_word_continue_proc: proc(r: rune) -> bool,
+
     str_delimiter: rune,
     at_end_of_str: bool,
 }
@@ -133,7 +135,6 @@ scanner_next_atom :: proc(s: ^Scanner) -> (atom: Atom) {
 
 @(private)
 scan :: proc(s: ^Scanner, a: ^Atom) -> (next: Scanner_State) {
-    a.offset, a.line, a.col = s.offset, s.line, s.col
     if s.offset >= len(s.input) {
         a.kind = .EOF
         a.len = 0
@@ -143,13 +144,15 @@ scan :: proc(s: ^Scanner, a: ^Atom) -> (next: Scanner_State) {
 
     switch s.state {
     case .Scanning:
+        a.offset, a.line, a.col = s.offset, s.line, s.col
         ch := peek(s)
         switch true {
         case s.at_end_of_str: next = .String_End
         case is_quote(s.str_delimiter): next = .String_Chunk
+        case is_quote(ch): next = .String_Start
         case s.is_word_start_proc(ch): next = .Word_Chunk
         case ch == ' ' || ch == '\t': next = .Whitespace
-        case ch == '\r':
+        case ch == '\r': next = .Carriage_Return
         case ch == '\n': next = .Newline
 
         case ch == '0':
@@ -224,6 +227,7 @@ scan :: proc(s: ^Scanner, a: ^Atom) -> (next: Scanner_State) {
         next = .Finished
 
     case .Punctuation:
+
     case .Whitespace:
         if .Emit_Whitespace in s.opts {
             if peek(s) == ' ' do next = .Space_Chunk
@@ -236,22 +240,23 @@ scan :: proc(s: ^Scanner, a: ^Atom) -> (next: Scanner_State) {
         }
 
     case .Space_Chunk:
-        a.kind = .Space
         for peek(s) == ' ' {
-            advance(s)
             a.len += 1
+            advance(s)
         }
+        a.kind = .Space
         next = .Finished
 
     case .Tab_Chunk:
-        a.kind = .Tab
         for peek(s) == '\t' {
             advance(s)
             a.len += 1
         }
+        a.kind = .Tab
         next = .Finished
 
     case .Newline:
+    case .Carriage_Return:
     case .Finished: unreachable()
     }
 
