@@ -1,6 +1,5 @@
 package fission
 
-import "core:log"
 import "core:unicode"
 
 Atom_Kind :: enum {
@@ -168,7 +167,6 @@ scan :: proc(s: ^Scanner, a: ^Atom) -> (next: Scanner_State) {
     case .Word_Chunk:
         a.kind = .Word
         for s.is_word_continue_proc(peek(s)) {
-            log.debugf("word ch: %d (%c)", peek(s), peek(s))
             a.len += 1
             advance(s)
         }
